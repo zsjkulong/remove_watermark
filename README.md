@@ -199,19 +199,39 @@ upscayl run -i input.png -o output.png -n upscayl-standard-2x -s 2 -f png
 
 ## Docker 部署
 
-### 构建镜像
-```bash
-docker build -t watermark-remover .
-```
-
-### 运行容器
+### 方式一：Docker Compose（推荐）
 
 ```bash
+# 构建镜像
+docker compose build
+
 # 水印去除
-docker run --rm -v $(pwd):/app watermark-remover test_video.mp4
+docker compose run --rm remove-watermark test_video.mp4
+docker compose run --rm remove-watermark test_video.mp4 output.mp4 -k 100 -v
 
 # Logo添加
-docker run --rm -v $(pwd):/app watermark-remover add_logo.py test_video.mp4 logo.png
+docker compose run --rm add-logo test_video.mp4 logo.png
+docker compose run --rm add-logo test_video.mp4 logo.png -p top-right -s 1.5 -o 1
+
+# 视频高清化
+docker compose run --rm upscale-video test_video.mp4
+docker compose run --rm upscale-video test_video.mp4 -s 2 -o output_hd.mp4
+```
+
+### 方式二：Docker 直接运行
+
+```bash
+# 构建镜像
+docker build -t watermark-remover .
+
+# 水印去除
+docker run --rm -v $(pwd):/data -w /data watermark-remover test_video.mp4
+
+# Logo添加
+docker run --rm -v $(pwd):/data -w /data --entrypoint python watermark-remover add_logo.py test_video.mp4 logo.png
+
+# 视频高清化
+docker run --rm -v $(pwd):/data -w /data --entrypoint python watermark-remover upscale_video.py test_video.mp4
 ```
 
 ---

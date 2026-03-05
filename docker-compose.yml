@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  # 水印去除
+  remove-watermark:
+    build: .
+    volumes:
+      - ./:/data
+    working_dir: /data
+    entrypoint: ["python", "remove_video_watermark.py"]
+
+  # Logo添加
+  add-logo:
+    build: .
+    volumes:
+      - ./:/data
+    working_dir: /data
+    entrypoint: ["python", "add_logo.py"]
+
+  # 视频高清化
+  upscale-video:
+    build: .
+    volumes:
+      - ./:/data
+    working_dir: /data
+    entrypoint: ["python", "upscale_video.py"]
