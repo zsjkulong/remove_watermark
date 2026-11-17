@@ -16,6 +16,7 @@ from typing import Optional
 
 import imageio
 import numpy as np
+from scipy import ndimage
 from scipy.ndimage import gaussian_filter
 
 
@@ -90,7 +91,14 @@ def extract_frames(video_path: str, keyframes_time: list, tmpdir: Path) -> int:
 
 
 def extract_watermark_mask(tmpdir: Path) -> Path:
-    """通过分析多帧图像提取水印蒙版"""
+    """通过分析多帧图像提取水印蒙版
+
+    只保留"在多帧中位置稳定、持续存在的高对比边缘"作为水印：
+     - 对每帧先取绝对梯度再平均：水印边缘位置固定，平均后依然高；
+      运动物体边缘位置飘移，平均后会被削弱。
+     - 再用连通域过滤：去掉零散噪点，同时丢弃覆盖画面比例过大的
+      "整片静止背景边缘"，避免蒙版过大导致整帧被模糊。
+    """
     buff = []
     for p in sorted(tmpdir.glob("output_*.png")):
         buff.append(imageio.imread(p))
@@ -98,19 +106,37 @@ def extract_watermark_mask(tmpdir: Path) -> Path:
     if len(buff) < 2:
         raise ValueError(f"需要至少2帧图像来提取水印，实际获取了 {len(buff)} 帧")
 
-    images = np.array(buff)
+    images = np.array(buff, dtype=np.float32)
 
-    # 计算梯度
-    dx = np.gradient(images, axis=1).mean(axis=3)
-    dy = np.gradient(images, axis=2).mean(axis=3)
-    mean_dx = np.abs(np.mean(dx, axis=0))
-    mean_dy = np.abs(np.mean(dy, axis=0))
+    # 各像素在各帧的绝对梯度平均值：稳定边缘 → 高值，运动边缘 → 低值
+    dx = np.abs(np.gradient(images, axis=1))
+    dy = np.abs(np.gradient(images, axis=2))
+    edge = (dx + dy).mean(axis=(0, 3))  # (H, W)
 
-    # 阈值过滤
-    threshold = 8
-    salient = ((mean_dx > threshold) | (mean_dy > threshold)).astype(float)
-    salient = normalize(gaussian_filter(salient, sigma=2))
-    mask = ((salient > 0.2) * 255).astype(np.uint8)
+    # 归一化 + 轻微平滑，避免噪声导致的小孔
+    edge = normalize(gaussian_filter(edge, sigma=1.2))
+    binary = edge > 0.3  # 调高该值 → 蒙版更小
+
+    # 连通域分析：只保留面积适中的分量
+    label, n = ndimage.label(np.asarray(binary, dtype=np.uint8))
+    if n > 0:
+        sizes = ndimage.sum(binary, label, index=np.arange(1, n + 1))
+        frame_area = binary.size
+        min_area = frame_area * 0.0005   # 去掉零散噪点
+        max_area = frame_area * 0.30     # 去掉横跨画面的背景边缘
+        keep = (sizes >= min_area) & (sizes <= max_area)
+        keep_map = np.zeros(n + 1, dtype=bool)
+        keep_map[1:] = keep
+        refined = keep_map[label]
+    else:
+        refined = binary
+
+    mask = np.zeros_like(binary, dtype=np.uint8)
+    mask[refined] = 255
+
+    # 轻微膨胀，把半透明水印的羽化边缘也纳入修补
+    if mask.any():
+        mask = ndimage.binary_dilation(mask, iterations=2).astype(np.uint8) * 255
 
     mask_path = tmpdir / "mask.png"
     imageio.imsave(str(mask_path), mask)
@@ -118,19 +144,29 @@ def extract_watermark_mask(tmpdir: Path) -> Path:
 
 
 def remove_watermark(video_path: str, mask_path: Path, output_path: str):
-    """使用ffmpeg的removelogo滤镜去除水印"""
+    """使用ffmpeg的removelogo滤镜去除水印
+
+    removelogo 滤镜参数是绝对路径时会因 Windows 盘符冒号被 FFmpeg 多层
+    解析切分而报错。因此这里把 ffmpeg 的工作目录切到蒙版所在目录，
+    仅传入文件名，彻底绕开盘符冒号问题。
+    """
+    mask_dir = mask_path.parent
+    # 切换工作目录到蒙版目录会改变相对路径解析基准，
+    # 因此须先把输入/输出路径转为绝对路径。
+    video_abs = os.path.abspath(video_path)
+    output_abs = os.path.abspath(output_path)
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "warning",
-        "-y", "-stats", "-i", video_path,
+        "-y", "-stats", "-i", video_abs,
         "-acodec", "copy",
-        "-vf", f"removelogo={str(mask_path)}",
-        "-c:v", "libx265",
+        "-vf", f"removelogo={mask_path.name}",
+        # libx264 视觉上更锐利、兼容性更好；crf 18 属视觉无损级（越小越清晰）
+        "-c:v", "libx264",
         "-crf", "18",
         "-preset", "slow",
-        "-tag:v", "hvc1",
-        output_path
+        output_abs
     ]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, cwd=str(mask_dir), check=True)
 
 
 def main():

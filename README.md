@@ -290,3 +290,7 @@ docker run --rm -v $(pwd):/data -w /data --entrypoint python watermark-remover u
 ## 许可证
 
 MIT
+
+
+
+python remove_region.py 2.mp4
